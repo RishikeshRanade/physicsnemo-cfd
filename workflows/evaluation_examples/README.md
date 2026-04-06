@@ -1,0 +1,220 @@
+# Evaluation examples (PhysicsNeMo-CFD)
+
+This workflow runs **metrics**, tabular outputs (JSON/CSV/HTML), optional **PNG visuals**, and optional VTK (`run.save_inference_mesh`, `reports.save_comparison_meshes`) using **[Hydra](https://hydra.cc/)** and **OmegaConf** — the same pattern as **`workflows/domino_design_sensitivities/`**.
+
+Install from this repo (`pip install -e .`) or `pip install nvidia-physicsnemo-cfd`, then use the commands below **from this directory** (`workflows/evaluation_examples/`).
+
+Configs live under **`conf/`**: **[`config_surface.yaml`](conf/config_surface.yaml)** (default) and **[`config_volume.yaml`](conf/config_volume.yaml)**. OmegaConf resolves **`${run.output_dir}`** (e.g. `run.metrics_cache.path`).
+
+---
+
+## Commands
+
+```bash
+# Surface benchmark (VTP / wall metrics, default config)
+python main.py
+
+# Volume benchmark (VTU / volume metrics)
+python main.py --config-name=config_volume
+
+# Hydra overrides (examples)
+python main.py case_id=run_1 run.device=cuda:0
+python main.py --config-name=config_volume run.output_dir=my_volume_run
+```
+
+**Multi-GPU (optional):** install **physicsnemo** so `DistributedManager` is available, then from this directory launch with PyTorch distributed, for example:
+
+```bash
+torchrun --standalone --nproc_per_node=4 main.py
+# or: torchrun --standalone --nproc_per_node=4 main.py --config-name=config_volume
+```
+
+Cases are split across GPUs (`cases[rank::world_size]`). Rank 0 writes `benchmark_results.*` and optional artifacts; all ranks return the merged result list. Set `run.distributed: false` only if debugging (each rank would run the full case list).
+
+**Matrix mode:** edit **`conf/config_surface.yaml`** or **`conf/config_volume.yaml`** — set `benchmark.mode: matrix` and fill `benchmark.models` / `benchmark.datasets`. Incompatible surface/volume pairs are skipped automatically.
+
+---
+
+## Config files
+
+| File | Role |
+| ---- | ----- |
+| [`conf/config_surface.yaml`](conf/config_surface.yaml) | Surface: **GeoTransolver** + drivaerml (`inference_domain: surface`), wall L2, Cd/Cl, surface visuals. `run.output_dir`: **`benchmark_results_surface`**. |
+| [`conf/config_volume.yaml`](conf/config_volume.yaml) | Volume: **GeoTransolver** + drivaerml (`inference_domain: volume`), volume L2 + residuals, `plot_fields_volume`, velocity streamlines. `run.output_dir`: **`benchmark_results_volume`**. |
+
+---
+
+## Config reference (YAML keys)
+
+| Section | Contents |
+| ------- | -------- |
+| **run** | `device`, `output_dir`, `seed`, `batch_size`, **`save_inference_mesh`**, **`distributed`** (default true: shard cases under `torchrun`), optional **`metrics_cache`** (see below) |
+| **model** / **benchmark.models** | `name`, `checkpoint`, `stats_path`, `inference_domain` (`surface` \| `volume`), `kwargs` |
+| **dataset** / **benchmark.datasets** | `name`, `root`, `split`, optional per-dataset `case_ids` (`null` = all), `kwargs` |
+| **output** | `mesh_field_names`, `ground_truth_mesh_field_names`; `volume_mesh_field_names`, `ground_truth_volume_mesh_field_names`; **`streamlines_vector_canonical`** (default `velocity`) |
+| **metrics** | Metric names or `{ name: ..., ...kwargs }` — see [Metrics](#metrics) |
+| **reports** | Optional PNG pipeline — see [Reports and plots](#reports-and-plots) |
+| **benchmark** | `mode` (`single` \| `matrix`), `models` / `datasets`, `reproducibility` |
+
+**`case_id`:** optional top-level Hydra key: `null` uses each dataset's `case_ids` (or all adapter cases); a **string** runs one case on every dataset; a **list** runs those cases on every dataset in matrix mode (preferred over repeating `case_ids` on each dataset). CLI examples: `case_id=run_1`, `'case_id=[run_1,run_11]'`.
+
+**Metrics cache (optional):** Under `run.metrics_cache`, `enabled: true` stores per-case scalars under `path` (resolved; default pattern `${run.output_dir}/metrics_cache`). Delete that directory for a full recompute. **Plots and meshes are not cached.**
+
+**Model notes:** GeoTransolver / Transolver **volume** needs matching stats (`global_stats.json` with `velocity`, `pressure_volume`, `turbulent_viscosity`, or `volume_fields_normalization.npz`). **Surface** needs surface stats. DoMINO uses `domino_config` for volume.
+
+**Custom code:** [Custom models](#custom-models-adding-a-new-wrapper) · [Custom datasets](#custom-datasets-adding-a-new-adapter) · [Baseline stubs](#baseline-model-stubs-surface_baseline-volume_baseline)
+
+---
+
+## Advanced
+
+The Python API **`physicsnemo.cfd.evaluation.benchmarks.engine.run_benchmark`** and **`Config.from_dict`** remain for scripts and tests. The modules **`python -m physicsnemo.cfd.evaluation.benchmarks.run`** and **`evaluation.inference`** accept a YAML/JSON path **without** Hydra interpolation — use only if you supply a **flat** file (no `${...}`) or materialized values.
+
+---
+
+## Metrics
+
+Registered names (or dicts with `name` + kwargs). Examples match **`conf/config_surface.yaml`** / **`config_volume.yaml`**:
+
+```yaml
+# Surface-oriented
+metrics:
+  - l2_pressure
+  - l2_shear_stress
+  - l2_pressure_area_weighted
+  - drag_error
+  - lift_error
+
+# Volume-oriented (see config_volume.yaml)
+metrics:
+  - l2_pressure_volume
+  - l2_turbulent_viscosity
+  - l2_velocity
+  - continuity_residual_l2
+  - momentum_residual_l2
+```
+
+| Name | Meaning |
+| ---- | ------- |
+| `l2_pressure`, `l2_shear_stress` | Surface L2 |
+| `l2_pressure_area_weighted` | Area-weighted L2 pressure (`area_wt_l2_pressure`) |
+| `l2_pressure_volume` | Volume pressure (`pressure_volume`) |
+| `l2_velocity`, `l2_turbulent_viscosity` | Volume / surface depending on case |
+| `drag_error`, `lift_error` | Coefficient errors |
+| `continuity_residual_l2`, `momentum_residual_l2` | Volume residuals |
+
+---
+
+## Reports and plots
+
+### What runs where
+
+The benchmark engine writes **`benchmark_results.json` / `.csv` / `.html`**, then optional **`reports.visuals`** PNGs (when `reports.enabled` and `visuals` is non-empty). Comparison VTK on disk exists only if **`reports.save_comparison_meshes: true`**. **`run.save_inference_mesh: true`** adds prediction-only VTK per case.
+
+| Name | Role |
+| ---- | ---- |
+| `field_comparison_surface` | Surface GT vs pred (`plot_field_comparisons`) |
+| `plot_fields_volume` | Volume scalars (`plot_fields`) |
+| `line_plot` | GT vs pred along `plot_coord` |
+| `design_scatter` | Pred vs true scatter + R²; needs **`pairs`** matching `per_case[].metrics` |
+| `design_trend` | Trend vs index; same **`pairs`**, optional **`idx_key`** |
+| `projections_hexbin` | Hexbin; needs **`mesh_paths`**, **`field`**, **`direction`** |
+| `streamlines_comparison` | Uses **`output.streamlines_vector_canonical`** or **`canonical_key`** |
+
+Register more: `physicsnemo.cfd.evaluation.reports.register_visual`.
+
+**Outputs:** PNGs under `{run.output_dir}/visuals/`; manifest `report_plugins_manifest.json`; optional comparison mesh `{run.output_dir}/{comparison_mesh_subdir}/`.
+
+### `reports` YAML shape
+
+```yaml
+reports:
+  enabled: true
+  save_comparison_meshes: false
+  comparison_mesh_subdir: comparison_meshes
+  visuals:
+    - field_comparison_surface
+    - name: field_comparison_surface
+      case_ids: ["run_1"]
+      canonical_keys: [pressure, shear_stress]
+      view: xy
+```
+
+| Key | Role |
+| --- | --- |
+| `enabled` | If true, run registered visuals after metrics/tables. |
+| `save_comparison_meshes` | Save comparison VTK to disk. |
+| `visual_case_ids` | Optional; limits in-memory meshes for PNGs; default `case_ids` for visuals that omit it. |
+| `visuals` | Ordered list: string names or `{ name: ..., ...kwargs }`. |
+
+### Bench example ↔ evaluation mapping
+
+| `workflows/bench_example` / `postprocessing_tools.visualization.utils` | Evaluation visual name |
+| --------------------------------------------------------- | ------------------------ |
+| `plot_field_comparisons` | `field_comparison_surface` |
+| `plot_fields` | `plot_fields_volume` |
+| `plot_line` | `line_plot` |
+| `plot_design_scatter` | `design_scatter` |
+| `plot_design_trend` | `design_trend` |
+| `plot_projections_hexbin` | `projections_hexbin` |
+| `plot_streamlines` | `streamlines_comparison` |
+
+### Line plots
+
+**`line_plot`** uses **`canonical_key`** (surface: `pressure`, `shear_stress`; volume: `pressure_volume`, …) and **`plot_coord`**. Centerline-style strip plots: see [`workflows/bench_example`](../bench_example/README.md) or a custom `register_visual`.
+
+### Troubleshooting
+
+- **`case_ids` in a visual** must cover the cases you evaluate; set top-level **`case_id`** (string or list) or per-visual **`case_ids`** consistently.
+- Headless PNG: **`report_plugins_manifest.json`** → `visual_errors`; often need **xvfb** (see `setup.sh`).
+- Use an **editable install** so the installed package includes your local `evaluation` / `postprocessing_tools` changes.
+
+---
+
+## Baseline model stubs (`surface_baseline`, `volume_baseline`)
+
+Smoke-test wrappers: **`checkpoint: ""`**, **`stats_path: ""`**. Set **`model.name`** in **`benchmark.models`** (matrix) or top-level **`model`** (single).
+
+```yaml
+model:
+  name: "surface_baseline"
+  checkpoint: ""
+  stats_path: ""
+dataset:
+  name: drivaerml
+  root: /path/to/data
+```
+
+---
+
+## Custom models (adding a new wrapper)
+
+1. Subclass **`CFDModel`** (`physicsnemo.cfd.evaluation.inference.model_registry`) under `physicsnemo/cfd/evaluation/inference/wrappers/`.
+2. Implement `INFERENCE_DOMAIN`, `OUTPUT_LOCATION`, `load`, `prepare_inputs`, `predict`, `decode_outputs`.
+3. **`register_model("my_model", MyWrapper)`** in `wrappers/__init__.py`.
+
+---
+
+## Custom datasets (adding a new adapter)
+
+1. Subclass **`DatasetAdapter`** under `physicsnemo/cfd/evaluation/datasets/adapters/`.
+2. Implement `list_cases`, `load_case` → **`CanonicalCase`**.
+3. **`register_adapter("my_dataset", MyAdapter)`** in `adapters/__init__.py`.
+
+---
+
+## Canonical types (`physicsnemo.cfd.evaluation.datasets.schema`)
+
+- **`CanonicalCase`** — `case_id`, `mesh_path`, `mesh_type`, `ground_truth`, `metadata`, `inference_domain`.
+- **Predictions** — surface: `pressure`, `shear_stress`; volume: `pressure_volume`, `turbulent_viscosity`, `velocity`.
+
+---
+
+## Package layout (repo root)
+
+| Path | Role |
+| ---- | ---- |
+| `physicsnemo/cfd/evaluation/config.py` | `Config`, `load_config` |
+| `physicsnemo/cfd/evaluation/benchmarks/` | Engine, JSON/CSV/HTML reports |
+| `physicsnemo/cfd/evaluation/reports/` | `register_visual`, built-in plots |
+| `physicsnemo/cfd/postprocessing_tools/` | Shared metrics / visualization algorithms |

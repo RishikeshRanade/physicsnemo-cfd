@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2026 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Model wrapper implementations; registration happens on import."""
+
+from physicsnemo.cfd.evaluation.inference.model_registry import register_model
+from physicsnemo.cfd.evaluation.inference.wrappers.domino import DominoWrapper
+from physicsnemo.cfd.evaluation.inference.wrappers.fignet import FIGNetWrapper
+from physicsnemo.cfd.evaluation.inference.wrappers.geotransolver import GeoTransolverWrapper
+from physicsnemo.cfd.evaluation.inference.wrappers.surface_baseline import SurfaceBaselineWrapper
+from physicsnemo.cfd.evaluation.inference.wrappers.transolver import TransolverWrapper
+from physicsnemo.cfd.evaluation.inference.wrappers.volume_baseline import VolumeBaselineWrapper
+from physicsnemo.cfd.evaluation.inference.wrappers.xmgn import XMGNWrapper
+
+register_model("fignet", FIGNetWrapper)
+register_model("xmgn", XMGNWrapper)
+register_model("geotransolver", GeoTransolverWrapper)
+register_model("transolver", TransolverWrapper)
+register_model("domino", DominoWrapper)
+register_model("surface_baseline", SurfaceBaselineWrapper)
+register_model("volume_baseline", VolumeBaselineWrapper)
+
+__all__ = [
+    "FIGNetWrapper",
+    "XMGNWrapper",
+    "GeoTransolverWrapper",
+    "TransolverWrapper",
+    "DominoWrapper",
+    "SurfaceBaselineWrapper",
+    "VolumeBaselineWrapper",
+]
